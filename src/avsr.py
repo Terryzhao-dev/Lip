@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -181,18 +182,48 @@ class AutoAVSRBackend:
     https://github.com/mpc001/auto_avsr
 
     Setup: bash scripts/setup_auto_avsr.sh
-    Then download a pretrained .pth listed in their README and either save to
-    checkpoints/auto_avsr.pth or set LIPSYNC_AUTO_AVSR_CHECKPOINT=/path.
 
-    Their demo.py is Hydra-based with key=value overrides — same shape as USR2.
-    If their CLI / output format differs from this implementation, the error
-    message will surface the exact mismatch and the file/line to tweak.
+    Then download a VSR checkpoint from their README's Model Zoo
+    (recommended first run: vsr_trlrs2lrs3vox2avsp_base.pth) and save it to
+    checkpoints/auto_avsr.pth, or set LIPSYNC_AUTO_AVSR_CHECKPOINT=/path.
+
+    Their entry script is `eval.py` (argparse-style, NOT Hydra), and it is
+    batch-oriented — it wants a list of clips via --root-dir + --test-file
+    rather than a single video. We generate a minimal one-line test-file
+    on the fly so the same backend can serve single-clip inference.
+
+    Two places to tweak if the upstream CLI / output format drifts:
+      1. The command construction in transcribe() (--modality / --root-dir /
+         --test-file / --pretrained-model-path).
+      2. The _RESULT_RE class attribute (see its header comment below).
+    Both produce clear, actionable error messages on mismatch.
     """
 
     name = "auto_avsr"
-    # Best-effort match for common VSR demo output patterns.
+
+    # =====================================================================
+    # _RESULT_RE — output-format drift edit point
+    # =====================================================================
+    # Auto-AVSR's README does not document the exact stdout shape of eval.py's
+    # transcript line, so this regex is intentionally a UNION of the patterns
+    # we've seen across VSR/AVSR demos. _extract_transcript() takes the LAST
+    # match in stdout (post-progress-bar, post-warnings).
+    #
+    # When upstream drifts and you see "exited 0 but no transcript line found"
+    # in the error: copy a representative line from `proc.stdout` here as a
+    # new alternation. Quick mental test:
+    #   python -c "import re; r = re.compile(<pattern>, re.MULTILINE|re.IGNORECASE); \
+    #              print(r.findall('<your sample stdout>'))"
+    # =====================================================================
     _RESULT_RE = re.compile(
-        r"(?:^\s*Result\s*:\s*|hyp\s*=\s*|prediction\s*:\s*|transcript\s*:\s*)(.+?)\s*$",
+        r"(?:"
+        r"^\s*Result\s*:\s*"          # USR2-style banner ('Result: ...')
+        r"|^\s*hyp\s*[:=]\s*"          # ESPnet-style ('hyp = ...' / 'hyp: ...')
+        r"|^\s*prediction\s*:\s*"      # generic VSR demos
+        r"|^\s*transcript\s*:\s*"
+        r"|^\s*pred\s*:\s*"            # short forms
+        r"|^\s*decoded\s*:\s*"
+        r")(?P<text>.+?)\s*$",
         re.MULTILINE | re.IGNORECASE,
     )
 
@@ -203,22 +234,27 @@ class AutoAVSRBackend:
                 f"Auto-AVSR repo not found at {repo}.\n"
                 f"Fix: bash scripts/setup_auto_avsr.sh"
             )
-        if not (repo / "demo.py").exists():
+        if not (repo / "eval.py").exists():
             raise NotInstalled(
-                f"Auto-AVSR demo.py missing at {repo}/demo.py.\n"
+                f"Auto-AVSR eval.py missing at {repo}/eval.py.\n"
                 f"Fix: rm -rf {repo} && bash scripts/setup_auto_avsr.sh"
             )
         ckpt = config.AUTO_AVSR_CHECKPOINT_PATH
         if ckpt is None or not ckpt.exists():
             raise NotInstalled(
                 f"Auto-AVSR checkpoint not found ({ckpt}).\n"
-                "Pick one from https://github.com/mpc001/auto_avsr (README → Models). "
-                "Save it to checkpoints/auto_avsr.pth or set LIPSYNC_AUTO_AVSR_CHECKPOINT."
+                "Pick a VSR .pth from https://github.com/mpc001/auto_avsr (README → "
+                "Model Zoo). Recommended: vsr_trlrs2lrs3vox2avsp_base.pth.\n"
+                "Save / rename to checkpoints/auto_avsr.pth, or set "
+                "LIPSYNC_AUTO_AVSR_CHECKPOINT=/path."
             )
         try:
             import torch  # noqa: F401
-        except ImportError:
-            raise NotInstalled("PyTorch not installed. Run: bash scripts/setup_auto_avsr.sh")
+            import sentencepiece  # noqa: F401
+        except ImportError as e:
+            raise NotInstalled(
+                f"Auto-AVSR dependency missing: {e}. Run: bash scripts/setup_auto_avsr.sh"
+            )
 
     def transcribe(self, video_path: Path, mode: Mode = "av") -> AVSRResult:
         self.load()
@@ -227,33 +263,51 @@ class AutoAVSRBackend:
         repo = config.AUTO_AVSR_REPO_DIR
         ckpt = config.AUTO_AVSR_CHECKPOINT_PATH
         assert ckpt is not None
-        # Auto-AVSR uses data.modality={video,audio,audiovisual}, file=<path>.
-        auto_modality = {"v": "video", "a": "audio", "av": "audiovisual"}[mode]
-        cmd = [
-            sys.executable, "demo.py",
-            f"file={video_path.resolve()}",
-            f"pretrained_model_path={ckpt.resolve()}",
-            f"data.modality={auto_modality}",
-            "detector=mediapipe",
-        ]
-        t0 = time.monotonic()
-        proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=900)
-        runtime_ms = int((time.monotonic() - t0) * 1000)
+
+        # Auto-AVSR's eval.py is batch-oriented (--root-dir + --test-file).
+        # For a single clip we produce a minimal one-line manifest pointing at
+        # the absolute clip path. If their test-file format differs, this is
+        # the second tweak point (alongside _RESULT_RE).
+        modality = {"v": "video", "a": "audio", "av": "audiovisual"}[mode]
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, dir=str(repo)
+        ) as tf:
+            # Common LRS3-style manifest line: <id>\t<rel_path>\t<duration>\t<text>
+            # eval.py only needs the path; we leave label fields blank.
+            tf.write(f"{video_path.stem}\t{video_path.resolve()}\t0\t\n")
+            test_file = Path(tf.name)
+
+        try:
+            cmd = [
+                sys.executable, "eval.py",
+                f"--modality={modality}",
+                f"--root-dir={video_path.resolve().parent}",
+                f"--test-file={test_file.name}",
+                f"--pretrained-model-path={ckpt.resolve()}",
+            ]
+            t0 = time.monotonic()
+            proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=900)
+            runtime_ms = int((time.monotonic() - t0) * 1000)
+        finally:
+            test_file.unlink(missing_ok=True)
+
         if proc.returncode != 0:
             raise RuntimeError(
-                f"Auto-AVSR demo.py exited {proc.returncode}.\n"
+                f"Auto-AVSR eval.py exited {proc.returncode}.\n"
                 f"Command: cd {repo} && {' '.join(cmd)}\n"
                 f"STDERR:\n{proc.stderr[-1500:]}\n"
                 f"STDOUT (tail):\n{proc.stdout[-500:]}\n\n"
-                "NOTE: Auto-AVSR's CLI may have rotated. Compare these args against "
-                "their current demo.py docstring; adjust src/avsr.py:AutoAVSRBackend.transcribe."
+                "If their CLI has rotated, adjust the argv in "
+                "src/avsr.py:AutoAVSRBackend.transcribe (the --modality / "
+                "--root-dir / --test-file / --pretrained-model-path block)."
             )
         text = self._extract_transcript(proc.stdout)
         if not text:
             raise RuntimeError(
-                "Auto-AVSR demo.py exited 0 but no transcript line found.\n"
+                "Auto-AVSR eval.py exited 0 but no transcript line was found.\n"
                 f"STDOUT:\n{proc.stdout[-1500:]}\n\n"
-                "Adjust AutoAVSRBackend._RESULT_RE in src/avsr.py to match their actual format."
+                "Copy a representative transcript line into "
+                "src/avsr.py:AutoAVSRBackend._RESULT_RE as a new alternation."
             )
         return AVSRResult(
             text=text,

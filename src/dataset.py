@@ -50,6 +50,8 @@ class Entry:
     language: str = "en"
     pseudo_transcript: str | None = None
     pseudo_label_model: str | None = None
+    pseudo_label_checkpoint: str | None = None
+    mode: str | None = None  # "vsr" | "avsr" | "asr" — recognition mode used
     prompt_version: str | None = None
     transcript_human: str | None = None
     review_status: str = "unreviewed"

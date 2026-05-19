@@ -141,7 +141,9 @@ class App:
                     session_id=session_id,
                     speaker_id=config.SPEAKER_ID,
                     pseudo_transcript=text,
-                    pseudo_label_model=result.model_id,
+                    pseudo_label_model=result.model_name,
+                    pseudo_label_checkpoint=result.checkpoint_name,
+                    mode=result.mode,
                     deleted=True,
                 )
             )
@@ -158,7 +160,9 @@ class App:
             audio_present=meta.audio_present,
             language="en",
             pseudo_transcript=text,
-            pseudo_label_model=result.model_id,
+            pseudo_label_model=result.model_name,
+            pseudo_label_checkpoint=result.checkpoint_name,
+            mode=result.mode,
             prompt_version=None,
             transcript_human=human,
             review_status="reviewed" if action == "save" else "unreviewed",

@@ -52,6 +52,73 @@ LIPSYNC_BACKEND=mock python scripts/run_inference.py any.mp4
 
 Mock returns a recognizable placeholder string so you can confirm the rest of the app works before pulling down 1–4 GB of model weights.
 
+## Cloud API (FastAPI)
+
+```bash
+# Install API deps (one-time)
+pip install fastapi 'uvicorn[standard]' python-multipart pydantic
+
+# Local server
+python scripts/serve.py                 # 127.0.0.1:8000
+python scripts/serve.py --host 0.0.0.0  # LAN / cloud
+```
+
+Endpoints:
+
+| Method | Path | Notes |
+|---|---|---|
+| GET  | `/healthz` | liveness probe |
+| GET  | `/models`  | `{available: [...], default: "usr2"}` |
+| POST | `/transcribe-video` | `multipart/form-data` with `file`, `model`, `mode` |
+| POST | `/log-correction`   | JSON body — appends a gold-quality reviewed Entry to `data/manifest.jsonl` |
+
+Example:
+
+```bash
+curl -F file=@/tmp/me_5s.mp4 \
+     -F model=usr2 -F mode=avsr \
+     http://localhost:8000/transcribe-video | jq
+
+# {
+#   "raw_transcript": "I ALSO ALLOWED MY NAME SERILY",
+#   "model_name": "usr2",
+#   "checkpoint_name": "baseplus_low_resource_lrs3vox2.pth",
+#   "mode": "av",
+#   "runtime_ms": 20891,
+#   "mouth_crop_path": null,
+#   "error": null
+# }
+
+curl -X POST http://localhost:8000/log-correction \
+     -H 'content-type: application/json' \
+     -d '{
+       "video_path": "data/clips/20260519T143300Z.mp4",
+       "raw_prediction": "I ALSO ALLOWED MY NAME SERILY",
+       "corrected_transcript": "I also allowed my name, surely.",
+       "model_name": "usr2",
+       "checkpoint_name": "baseplus_low_resource_lrs3vox2.pth",
+       "mode": "avsr",
+       "fps": 25, "resolution": "1280x720"
+     }' | jq
+```
+
+## Programmatic interface
+
+```python
+from pathlib import Path
+import avsr
+
+result = avsr.transcribe(
+    Path("clip.mp4"),
+    mode="vsr",       # "vsr" / "avsr" / "asr"  (also "v"/"a"/"av")
+    model="auto_avsr" # "usr2" / "auto_avsr" / "avhubert" / "mock"
+)
+print(result.text, result.model_name, result.checkpoint_name, result.runtime_ms)
+
+# Registry
+print(avsr.available_models())
+```
+
 ## Modes
 
 Mode is controlled by env vars (`src/config.py` is the source of truth).

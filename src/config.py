@@ -40,6 +40,14 @@ USR2_BACKBONE: str = os.environ.get("LIPSYNC_USR2_BACKBONE", "resnet_transformer
 # Path to the cloned backend repo (for subprocess-based backends like USR2).
 USR2_REPO_DIR: Path = ROOT / "third_party" / "usr2"
 
+# Auto-AVSR (mpc001/auto_avsr) — research/cloud backend for VSR/AVSR.
+AUTO_AVSR_REPO_DIR: Path = ROOT / "third_party" / "auto_avsr"
+AUTO_AVSR_CHECKPOINT_PATH: Path | None = (
+    Path(os.environ["LIPSYNC_AUTO_AVSR_CHECKPOINT"]).expanduser()
+    if "LIPSYNC_AUTO_AVSR_CHECKPOINT" in os.environ
+    else ROOT / "checkpoints" / "auto_avsr.pth"
+)
+
 # ---- App behavior -----------------------------------------------------------
 # When True, every recorded clip is saved to data/manifest.jsonl with the
 # review dialog. When False (default), the clip is transcribed and then deleted.

@@ -9,6 +9,12 @@ python-dotenv>=1.0.0
 mediapipe>=0.10.14
 numpy>=1.26
 
+# Cloud API
+fastapi>=0.110
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pydantic>=2.6
+
 # Training / inference dependencies (install once you wire up avsr.py):
 #   torch>=2.2
 #   torchaudio>=2.2

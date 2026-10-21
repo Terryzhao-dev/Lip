@@ -1,4 +1,4 @@
-# lipsync-text
+# Lip
 
 A personal **visual / audio-visual speech recognition (VSR / AVSR)** desktop app. Records a short clip from the webcam, runs a real pretrained lip-reading model on it, and gives you the text on your clipboard. Future-direction goal: fine-tune the same model on your own collected data.
 
@@ -10,7 +10,7 @@ Inference uses **USR 2.0** (Haliassos et al., ICLR 2026) by default. Auto-AVSR a
 
 ```bash
 # 1. Project setup
-cd ~/lipsync-text
+git clone https://github.com/Terryzhao-dev/Lip.git && cd Lip
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 brew install ffmpeg                          # webcam capture + USR2 video decode

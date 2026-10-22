@@ -1,10 +1,10 @@
 # Lip
 
-A personal **visual / audio-visual speech recognition (VSR / AVSR)** desktop app. Records a short clip from the webcam, runs a real pretrained lip-reading model on it, and gives you the text on your clipboard. Future-direction goal: fine-tune the same model on your own collected data.
+Lip reading on the desktop. Press ⌘⇧L, mouth a sentence at the webcam, and the text lands on your clipboard. Recognition is done by USR 2.0 (Haliassos et al., ICLR 2026), a pretrained visual speech recognition model. LLMs only come in optionally, to clean up punctuation.
 
-Inference uses **USR 2.0** (Haliassos et al., ICLR 2026) by default. Auto-AVSR and AV-HuBERT skeletons are present in `src/avsr.py` if you want to swap. Multimodal LLMs (Gemini, Grok, MiniMax) are **not** the recognition model — they only show up as optional post-process rescorers.
+Longer term I want to fine-tune it on my own recordings, which is what the data collection mode is for. Auto-AVSR also works as a backend (through its `eval.py`); AV-HuBERT is stubbed but not wired up yet.
 
-> **Checkpoint links rotate.** This repo deliberately does not hardcode a direct download URL for the USR2 checkpoint. The official **`ahaliassos/usr2` GitHub README** is the source of truth — its `Pretrained Models → Fine-tuned (full model) → High-resource` table holds the current links. Whenever the link goes stale, refresh from there.
+Note: the USR 2.0 checkpoint links change, so I don't hardcode them. Get the current one from the "Pretrained Models" table in the [ahaliassos/usr2](https://github.com/ahaliassos/usr2) README.
 
 ## Quick start
 
@@ -20,7 +20,7 @@ bash scripts/setup_usr2.sh
 
 # 3. Download a checkpoint manually from the USR2 GitHub README's checkpoint table.
 #
-#    The official table is the source of truth — treat any hardcoded checkpoint
+#    The official table is the source of truth; treat any hardcoded checkpoint
 #    URL in this repo as potentially stale. Authors rotate Drive/HF links.
 #
 #    Steps:
@@ -70,7 +70,7 @@ Endpoints:
 | GET  | `/healthz` | liveness probe |
 | GET  | `/models`  | `{available: [...], default: "usr2"}` |
 | POST | `/transcribe-video` | `multipart/form-data` with `file`, `model`, `mode` |
-| POST | `/log-correction`   | JSON body — appends a gold-quality reviewed Entry to `data/manifest.jsonl` |
+| POST | `/log-correction`   | JSON body, appends a gold-quality reviewed Entry to `data/manifest.jsonl` |
 
 Example:
 
@@ -127,14 +127,14 @@ Mode is controlled by env vars (`src/config.py` is the source of truth).
 |---|---|---|
 | **Transcribe-only (default)** | nothing | Record → AVSR → display → discard clip. Nothing saved. |
 | **Collect for fine-tuning** | `LIPSYNC_COLLECT=1` | Same flow, but after transcription a review dialog opens. Saving writes the clip and your corrected transcript to `data/manifest.jsonl`. See `TRAINING_PLAN.md`. |
-| **LLM rescore** | `LIPSYNC_RESCORE=1` | AVSR text is post-processed by `rescore.py:polish()` (Gemini, punctuation cleanup only — never adds words). |
+| **LLM rescore** | `LIPSYNC_RESCORE=1` | AVSR text is post-processed by `rescore.py:polish()` (Gemini, punctuation cleanup only, never adds words). |
 
 Modality:
 
 | Set | Behavior |
 |---|---|
 | `LIPSYNC_MODALITY=av` (default) | audio + visual (best accuracy when audio is captured) |
-| `LIPSYNC_MODALITY=v` | visual only — for silent mouthing |
+| `LIPSYNC_MODALITY=v` | visual only, for silent mouthing |
 | `LIPSYNC_MODALITY=a` | audio only |
 
 Backend:
@@ -142,7 +142,7 @@ Backend:
 ```bash
 LIPSYNC_BACKEND=usr2         # default
 LIPSYNC_BACKEND=mock         # placeholder, for testing without weights
-LIPSYNC_BACKEND=auto_avsr    # skeleton (not yet wired up)
+LIPSYNC_BACKEND=auto_avsr    # needs the Auto-AVSR repo + checkpoint
 LIPSYNC_BACKEND=avhubert     # skeleton (not yet wired up)
 ```
 
@@ -177,8 +177,8 @@ LIPSYNC_BACKEND=avhubert     # skeleton (not yet wired up)
 
 ## macOS permissions
 
-- **Camera, Microphone** — auto-prompt on first capture.
-- **Accessibility** — required by `pynput` for the ⌘⇧L global hotkey. System Settings → Privacy & Security → Accessibility → add and restart your terminal/IDE.
+- **Camera, Microphone**: auto-prompt on first capture.
+- **Accessibility**: required by `pynput` for the ⌘⇧L global hotkey. System Settings → Privacy & Security → Accessibility → add and restart your terminal/IDE.
 
 To pick a specific audio device (e.g. AirPods):
 
@@ -189,7 +189,7 @@ export LIPSYNC_FFMPEG_AUDIO_DEV=<index>
 
 ## Switching backends
 
-To swap USR2 for Auto-AVSR or AV-HuBERT, those backends are scaffolded but not wired up — implement `load()` and `transcribe()` in the relevant class in `src/avsr.py`, then `export LIPSYNC_BACKEND=auto_avsr` (or `avhubert`).
+Auto-AVSR runs through its own `eval.py` CLI (`export LIPSYNC_BACKEND=auto_avsr`). AV-HuBERT is only scaffolded: implement `load()` and `transcribe()` in the relevant class in `src/avsr.py`, then `export LIPSYNC_BACKEND=avhubert`.
 
 ## Optional: fine-tuning on your own data
 
@@ -221,14 +221,14 @@ Schema is in `src/dataset.py:Entry`; full field list and validation rules descri
 
 These are **support models**, not the recognition system. Only used for:
 - Punctuation polish / capitalization (`rescore.py:polish`).
-- N-best selection from beam-search output (`rescore.py:rescore_nbest`) — constrained to picking one of the existing hypotheses, never free-text generation.
+- N-best selection from beam-search output (`rescore.py:rescore_nbest`), constrained to picking one of the existing hypotheses, never free-text generation.
 - Code generation / project automation during development.
 
 If you fine-tune any LLM, it's only as a text post-processor on top of AVSR output. Never as the core recognition model.
 
-## Honest limitations
+## Limitations
 
 - USR2 inference is invoked via subprocess against their `demo.py`. Adds 1–3 s of Python startup overhead per call. If we hit a latency wall, switch to in-process import.
-- Mouth crop in `src/preprocess.py` doesn't do face alignment / rotation normalization — center crop around the lip centroid. Good enough as a baseline.
-- Single-speaker assumption everywhere — `speaker_id` field exists for future multi-speaker support but defaults to `"default"`.
-- Hold-to-record / streaming inference / menu-bar app — deferred.
+- Mouth crop in `src/preprocess.py` doesn't do face alignment / rotation normalization, just a centre crop around the lip centroid. Good enough as a baseline.
+- Single-speaker assumption everywhere. `speaker_id` field exists for future multi-speaker support but defaults to `"default"`.
+- Hold-to-record / streaming inference / menu-bar app: not done yet.
